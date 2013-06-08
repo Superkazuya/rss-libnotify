@@ -16,6 +16,7 @@
 #define LEN_URL 128
 #define LEN_ETAG 128
 #define LEN_MAX 128
+#define DEBUG
 
 typedef struct
 {
@@ -99,11 +100,15 @@ fetch(rss_thread* rssthread)
   if(curl == NULL)
     die("Curl init error.", 1);
   curl_easy_setopt(curl, CURLOPT_URL, rssthread->url);
-  //curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 40960);
+  curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 40960);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+#ifdef DEBUG
+  curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
+#endif
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, parse_rss_callback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, parse_context);
 
+  printf("fetching from %s(%s):\n", rssthread->site_name, rssthread->url);
   if((res = curl_easy_perform(curl)) != CURLE_OK)
     die("Curl fetch error.", 1);
   else
@@ -125,9 +130,9 @@ rss_on_startelem(void* ctx, const xmlChar* name, const xmlChar** attr)
   if(curr_node->depth != 4)
     return;
   if(!xmlStrcmp(name, "title") )
-    curr_node->state = 1; //set lsb to 1
+    curr_node->state = 1;//title mode
   else if(!xmlStrcmp(name, "pubDate"))
-    curr_node->state = 2; //set 2 lsb to 1
+    curr_node->state = 2;//pubdate mode
 }
 
 static void
@@ -182,7 +187,10 @@ rss_on_characters(void* ctx, const xmlChar* ch, int len)
 #endif
     if(pubDate <= curr_node->rssthread->last_pubDate) //display only new feeds
     {
-      curr_node->is_ok = 0;
+      //curr_node->is_ok = 0;
+#ifdef DEBUG
+      printf("so much for new feeds.\n");
+#endif
       write_config(curr_node);
       printf("Config file written\n");
       exit(EXIT_SUCCESS);
