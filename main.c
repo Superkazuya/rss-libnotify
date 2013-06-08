@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <libnotify/notify.h>
 
 #define CONFIG_FILE ".rssrc"
@@ -22,7 +23,7 @@ typedef struct
 {
   pthread_t thread_id;
   unsigned i;
-  time_t last_pubDate;
+  time_t last_pubDate;  //retrieve from last fetch
   char site_name[LEN_SITE_NAME];
   char etag[LEN_ETAG];
   char url[LEN_URL];
@@ -46,24 +47,17 @@ typedef struct
   NotifyNotification* notification;
 } xml_node;
 
-static void rss_on_startelem(void* ctx, const xmlChar* name, const xmlChar** atts);
-static void rss_on_endelem(void* ctx, const xmlChar* name);
-static void rss_on_characters(void* ctx, const xmlChar* ch, int len);
-static void rss_on_enddoc(void* ctx);
+static void rss_on_startelem(void   *ctx, const xmlChar*name, const xmlChar**atts);
+static void rss_on_endelem(void     *ctx, const xmlChar*name);
+static void rss_on_characters(void  *ctx, const xmlChar*ch, int len);
+static void rss_on_enddoc(void      *ctx);
 
-static void write_config(xml_node* );
+static void write_config(xml_node   *);
+static int  read_config(const       char *);
 
 //global
 char path[32];
 pthread_mutex_t config_mutex;
-
-void
-die(const char* err_msg, int err_no)
-{
-  printf(err_msg);
-  printf("\n");
-  exit(err_no);
-}
 
 size_t
 parse_rss_callback(char* in, size_t size, size_t nmemb, void* storage)
@@ -105,8 +99,7 @@ fetch(void* rssthread_ptr)
 
   xmlParserCtxt* parse_context = xmlCreatePushParserCtxt(&sax_handler, &current, 0, 0, NULL);
 
-  if(curl == NULL)
-    die("Curl init error.", 1);
+  assert(curl != NULL);
   curl_easy_setopt(curl, CURLOPT_URL, rssthread->url);
   curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 40960);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -131,17 +124,19 @@ static void
 rss_on_startelem(void* ctx, const xmlChar* name, const xmlChar** attr)
 {
   xml_node* curr_node = ctx;
-  //clean up
-  free(curr_node->content.mem);
-  curr_node->content.mem = NULL;
-  curr_node->content.size = 0;
   curr_node->depth++;
   if(!xmlStrcmp(name, "item") )
     curr_node->in_item = 1;
   if(curr_node->depth != 4 || curr_node->in_item != 1)
     return;
   if(!xmlStrcmp(name, "title") )
+  {
     curr_node->state = 1;//title mode
+    //clean up
+    free(curr_node->content.mem);
+    curr_node->content.mem = NULL;
+    curr_node->content.size = 0;
+  }
   else if(!xmlStrcmp(name, "pubDate"))
     curr_node->state = 2;//pubdate mode
 }
@@ -155,10 +150,10 @@ rss_on_endelem(void* ctx, const xmlChar* name)
   if(!xmlStrcmp(name, "item") )
     curr_node->in_item = 1;
 
-  if(curr_node->state == 1 && curr_node->is_ok)
+  if(curr_node->state == 2 && curr_node->is_ok == 1)
   {
 #ifdef DEBUG
-    printf("%s\n", mem_addr);
+    printf("%s, %d\n", mem_addr, curr_node->is_ok);
 #endif
     curr_node->notification = notify_notification_new(curr_node->rssthread->site_name, NULL, NULL);
     notify_notification_update(curr_node->notification, curr_node->rssthread->site_name, mem_addr,  NULL);
@@ -195,9 +190,6 @@ rss_on_characters(void* ctx, const xmlChar* ch, int len)
     pubDate = curl_getdate(time, NULL);
     if(pubDate > curr_node->last_pubDate)
       curr_node->last_pubDate = pubDate;
-#ifdef DEBUG
-    printf("<--pubDate[%d]: %s ::: %d :: %d :: %d\n",curr_node->rssthread->i, time, pubDate, curr_node->last_pubDate, curr_node->rssthread->last_pubDate);
-#endif
     //printf("\n");
     if(pubDate <= curr_node->rssthread->last_pubDate) //display only new feeds
     {
@@ -208,6 +200,9 @@ rss_on_characters(void* ctx, const xmlChar* ch, int len)
       write_config(curr_node);
       pthread_exit(NULL);
     }
+#ifdef DEBUG
+    printf("pubDate[%d]: %s ::: %d :: %d :: %d--->",curr_node->rssthread->i, time, pubDate, curr_node->last_pubDate, curr_node->rssthread->last_pubDate);
+#endif
     break;
     default:
     return;
@@ -281,6 +276,8 @@ read_config(const char* filename)
 static void
 write_config(xml_node* xmlnode)
 {
+  if(xmlnode->last_pubDate <= xmlnode->rssthread->last_pubDate)
+    goto UNCHANGED;
   printf("thread %d:trying to write config file \n", xmlnode->rssthread->i);
   pthread_mutex_lock(&config_mutex);
   /*
@@ -303,8 +300,10 @@ write_config(xml_node* xmlnode)
   xmlXPathFreeObject(xpath_content);
   xmlXPathFreeContext(xpath_ctx);
   pthread_mutex_unlock(&config_mutex);
-  printf("thread %d:config file written\n", xmlnode->rssthread->i);
+  printf("thread %d:config file written.\n", xmlnode->rssthread->i);
   return;
+UNCHANGED:
+  printf("thread %d:no change made, exit.\n", xmlnode->rssthread->i);
 }
 
 int
@@ -314,8 +313,11 @@ main()
   xmlInitParser();
   pthread_mutex_init(&config_mutex, NULL);
   curl_global_init(CURL_GLOBAL_ALL);
-  assert(read_config(path) == 0);
-  //fetch(rssthread);
+  while(1)
+  {
+    assert(read_config(path) == 0);
+    sleep(300);
+  }
   xmlCleanupParser();
   xmlMemoryDump();
   pthread_mutex_destroy(&config_mutex);
