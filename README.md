@@ -4,4 +4,4 @@ pthread
 
 etag conditional fetch
 
-more robust
+more robust -> seek <rss> tag

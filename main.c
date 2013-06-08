@@ -20,6 +20,8 @@
 
 typedef struct
 {
+  pthread_t thread_id;
+  unsigned i;
   time_t last_pubDate;
   char site_name[LEN_SITE_NAME];
   char etag[LEN_ETAG];
@@ -36,6 +38,7 @@ typedef struct
 {
   char state;   // 1:title 2:pubDate
   char is_ok;
+  char in_item;
   unsigned int depth;
   struct MemStruct content;
   time_t last_pubDate;
@@ -52,6 +55,7 @@ static void write_config(xml_node* );
 
 //global
 char path[32];
+pthread_mutex_t config_mutex;
 
 void
 die(const char* err_msg, int err_no)
@@ -74,18 +78,22 @@ parse_rss_callback(char* in, size_t size, size_t nmemb, void* storage)
   return(0);
 }
 
-int
-fetch(rss_thread* rssthread)
+void*
+fetch(void* rssthread_ptr)
 {
+  //Curl for rss fetch
   CURL *curl = curl_easy_init();
   CURLcode res;
-  notify_init(rssthread->site_name);
 
   xml_node current;
   memset(&current, 0, sizeof(xml_node));
   current.is_ok = 1;
+
+  rss_thread* rssthread = rssthread_ptr;
+  printf("----------------------------thread %d start!----------------------------\n", rssthread->i);
   current.last_pubDate = rssthread->last_pubDate;
   current.rssthread = rssthread;
+  notify_init(rssthread->site_name);
 
   xmlSAXHandler sax_handler;
   memset(&sax_handler, 0, sizeof(xmlSAXHandler));
@@ -102,7 +110,7 @@ fetch(rss_thread* rssthread)
   curl_easy_setopt(curl, CURLOPT_URL, rssthread->url);
   curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 40960);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-#ifdef DEBUG
+#ifdef CURL_DEBUG
   curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
 #endif
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, parse_rss_callback);
@@ -110,12 +118,13 @@ fetch(rss_thread* rssthread)
 
   printf("fetching from %s(%s):\n", rssthread->site_name, rssthread->url);
   if((res = curl_easy_perform(curl)) != CURLE_OK)
-    die("Curl fetch error.", 1);
+    pthread_exit(NULL);
   else
     xmlParseChunk(parse_context, NULL, 0, 1);
 
   free(current.content.mem);
-  return(0);
+  curl_easy_cleanup(curl);
+  pthread_exit(NULL);
 }
 
 static void
@@ -127,7 +136,9 @@ rss_on_startelem(void* ctx, const xmlChar* name, const xmlChar** attr)
   curr_node->content.mem = NULL;
   curr_node->content.size = 0;
   curr_node->depth++;
-  if(curr_node->depth != 4)
+  if(!xmlStrcmp(name, "item") )
+    curr_node->in_item = 1;
+  if(curr_node->depth != 4 || curr_node->in_item != 1)
     return;
   if(!xmlStrcmp(name, "title") )
     curr_node->state = 1;//title mode
@@ -141,8 +152,10 @@ rss_on_endelem(void* ctx, const xmlChar* name)
   xml_node* curr_node = ctx;
   curr_node->depth--;
   char* mem_addr = curr_node->content.mem; //pass value
+  if(!xmlStrcmp(name, "item") )
+    curr_node->in_item = 1;
 
-  if(curr_node->state == 1)
+  if(curr_node->state == 1 && curr_node->is_ok)
   {
 #ifdef DEBUG
     printf("%s\n", mem_addr);
@@ -183,17 +196,17 @@ rss_on_characters(void* ctx, const xmlChar* ch, int len)
     if(pubDate > curr_node->last_pubDate)
       curr_node->last_pubDate = pubDate;
 #ifdef DEBUG
-    printf("%d :: %d :: %d ----->", pubDate, curr_node->last_pubDate, curr_node->rssthread->last_pubDate);
+    printf("<--pubDate[%d]: %s ::: %d :: %d :: %d\n",curr_node->rssthread->i, time, pubDate, curr_node->last_pubDate, curr_node->rssthread->last_pubDate);
 #endif
+    //printf("\n");
     if(pubDate <= curr_node->rssthread->last_pubDate) //display only new feeds
     {
-      //curr_node->is_ok = 0;
+      curr_node->is_ok = 0;
 #ifdef DEBUG
-      printf("so much for new feeds.\n");
+      printf("\n----------------------------thread %d: so much for new feeds.----------------------------\n", curr_node->rssthread->i);
 #endif
       write_config(curr_node);
-      printf("Config file written\n");
-      exit(EXIT_SUCCESS);
+      pthread_exit(NULL);
     }
     break;
     default:
@@ -207,9 +220,10 @@ rss_on_enddoc(void* ctx)
   xml_node* curr_node = ctx;
   write_config(curr_node);
   printf("Config file written\n");
+  pthread_exit(NULL);
 }
 
-static rss_thread*
+static int
 read_config(const char* filename)
 {
   unsigned int i;
@@ -218,74 +232,93 @@ read_config(const char* filename)
   assert(doc != NULL);
   xmlXPathContext* xpath_ctx = xmlXPathNewContext(doc);
   assert(xpath_ctx != NULL);
-  xmlXPathObject*  xpath_obj = xmlXPathEvalExpression("/sites/*", xpath_ctx);
+  xmlXPathObject*  xpath_obj = xmlXPathEvalExpression("/sites/*", xpath_ctx); //Get all sites
   xmlXPathObject* xpath_content;
   assert(xpath_obj != NULL);
 
   xmlNodeSet* node_set = xpath_obj->nodesetval;
   char* nodes;
-  rssthread = calloc(1, sizeof(rss_thread));
+  rssthread = calloc(node_set->nodeNr, sizeof(rss_thread));
+#ifdef DEBUG
+  printf("%d thread(s) in total.\n", node_set->nodeNr);
+#endif
   for(i = 0; i < node_set->nodeNr; i++)
   {
-    strncpy(rssthread->site_name, node_set->nodeTab[i]->name, LEN_SITE_NAME);
+    (rssthread+i)->i = i;
+    strncpy((rssthread+i)->site_name, node_set->nodeTab[i]->name, LEN_SITE_NAME);
     xpath_content = xmlXPathEvalExpression("//url", xpath_ctx);
     assert(xpath_content != NULL);
-    nodes = xpath_content->nodesetval->nodeTab[0]->children->content;
-    strncpy(rssthread->url, nodes, LEN_URL);
+    nodes = xpath_content->nodesetval->nodeTab[i]->children->content;
+#ifdef DEBUG
+#endif
+    strncpy((rssthread+i)->url, nodes, LEN_URL);
 
     xpath_content = xmlXPathEvalExpression("//last_pubDate", xpath_ctx);
     assert(xpath_content != NULL);
-    nodes = xpath_content->nodesetval->nodeTab[0]->children->content;
-    rssthread->last_pubDate = atoi(nodes);
+    nodes = xpath_content->nodesetval->nodeTab[i]->children->content;
+    (rssthread+i)->last_pubDate = atoi(nodes);
+    pthread_create(&(rssthread+i)->thread_id, NULL, fetch, (void*)(rssthread+i));
   }
-
+  xmlFreeDoc(doc);
+  printf("doc freed.\n");
+  for(i = 0; i < node_set->nodeNr; i++)
+  {
+    pthread_join((rssthread+i)->thread_id, NULL);
+#ifdef DEBUG
+    printf("thread %d destroyed.\n", (rssthread+i)->i);
+#endif
+  }
   xmlXPathFreeObject(xpath_obj);
   xmlXPathFreeContext(xpath_ctx);
 
-  return(rssthread);
+  free(rssthread);
+#ifdef DEBUG
+  printf("all thread(s) destroyed.\n");
+#endif
+  return(0);
 }
 
 static void
 write_config(xml_node* xmlnode)
 {
-  char exp[LEN_SITE_NAME+7] = "/sites/\0";
+  printf("thread %d:trying to write config file \n", xmlnode->rssthread->i);
+  pthread_mutex_lock(&config_mutex);
+  /*
   strncpy(exp, xmlnode->rssthread->site_name, LEN_SITE_NAME);
+  char exp[LEN_SITE_NAME+7] = "/sites/\0";
+  */
+  char exp[LEN_SITE_NAME+7];
   xmlDoc* doc =  xmlParseFile(path);
   assert(doc != NULL);
   xmlXPathContext* xpath_ctx = xmlXPathNewContext(doc);
   assert(xpath_ctx != NULL);
-  xmlXPathObject*  xpath_obj = xmlXPathEvalExpression(exp, xpath_ctx);
-  xmlXPathObject* xpath_content;
-  assert(xpath_obj != NULL);
-  xmlNodeSet* node_set = xpath_obj->nodesetval;
-  xmlNode* nodes;
-
-  xpath_content = xmlXPathEvalExpression("//last_pubDate", xpath_ctx);
+  xmlXPathObject* xpath_content = xmlXPathEvalExpression("//last_pubDate", xpath_ctx);
   assert(xpath_content != NULL);
-  nodes = xpath_content->nodesetval->nodeTab[0];
+  xmlNode* nodes = xpath_content->nodesetval->nodeTab[xmlnode->rssthread->i];
   sprintf(exp, "%d", xmlnode->last_pubDate);
   xmlNodeSetContent(nodes, exp);
   xmlSaveFile(path, doc);
-  xmlXPathFreeObject(xpath_obj);
+  xmlFreeDoc(doc);
+  printf("doc freed.\n");
+  xmlXPathFreeObject(xpath_content);
   xmlXPathFreeContext(xpath_ctx);
+  pthread_mutex_unlock(&config_mutex);
+  printf("thread %d:config file written\n", xmlnode->rssthread->i);
+  return;
 }
 
 int
 main()
 {
-  //Curl for rss fetch
   sprintf(path, "%s/%s", getenv("HOME"), CONFIG_FILE);
   xmlInitParser();
-  rss_thread* rssthread = read_config(path);
-  /*
-  printf("%s\n", rssthread->site_name);
-  printf("%s\n", rssthread->url);
-  */
-  fetch(rssthread);
-
-  free(rssthread);
+  pthread_mutex_init(&config_mutex, NULL);
+  curl_global_init(CURL_GLOBAL_ALL);
+  assert(read_config(path) == 0);
+  //fetch(rssthread);
   xmlCleanupParser();
   xmlMemoryDump();
+  pthread_mutex_destroy(&config_mutex);
   return(EXIT_SUCCESS);
 }
 
