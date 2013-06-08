@@ -1,6 +1,8 @@
 todo
 ---
-pthread
+make it a daemon
+
+beautify
 
 etag conditional fetch
 
