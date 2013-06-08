@@ -17,7 +17,6 @@
 #define LEN_URL 128
 #define LEN_ETAG 128
 #define LEN_MAX 128
-#define DEBUG
 
 typedef struct
 {
