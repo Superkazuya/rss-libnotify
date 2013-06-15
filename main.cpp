@@ -35,13 +35,13 @@ using namespace std;
 static pthread_mutex_t config_mutex;
 string path;
 
-static void* fetch(void*);
-static void rss_on_startelem(void   *ctx, const xmlChar*name, const xmlChar**atts);
-static void rss_on_endelem(void     *ctx, const xmlChar*name);
-static void rss_on_characters(void  *ctx, const xmlChar*ch, int len);
-static void rss_on_enddoc(void      *ctx);
-static xmlNode* get_node_by_name(xmlChar*, xmlNode*);
-static int  read_config(const string);
+static void    *fetch(void                *);
+static void     rss_on_startelem(void     *ctx, const xmlChar *name, const xmlChar**atts);
+static void     rss_on_endelem(void       *ctx, const xmlChar *name);
+static void     rss_on_characters(void    *ctx, const xmlChar *ch, int len);
+static void     rss_on_enddoc(void        *ctx);
+static xmlNode *get_node_by_name(xmlChar  *, xmlNode*);
+static int      read_config(const         string);
 
 #include "rss_info.h"
 rss_info::rss_info(string site_name, string url, string last_pubDate):
@@ -95,7 +95,7 @@ thread::~thread()
   xmlSaveFile(path.c_str(), doc);
   xmlFreeDoc(doc);
   pthread_mutex_unlock(&config_mutex);
-  printf("thread %d:config file written.\n", info.last_pubDate);
+  cerr << "thread " << info.last_pubDate <<":config file written."<< endl;
   return;
 }
 
@@ -105,6 +105,7 @@ get_node_by_name(xmlChar* name, xmlNode* node_head)
   for( ;node_head != NULL; node_head = node_head->next)
     if(!xmlStrcmp(name, node_head->name))
       return node_head;
+  return NULL;
 }
 
 size_t
