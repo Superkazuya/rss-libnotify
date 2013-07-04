@@ -29,6 +29,8 @@
 
 using namespace std;
 
+#define APP_NAME ("<span color=\"#ef5800\"><big><b>"+info.site_name+"</b></big></span>")
+
 //#define CURL_DEBUG
 #define CONFIG_FILE ".rssrc"
 //global
@@ -43,7 +45,7 @@ static void     rss_on_enddoc(void        *ctx);
 static xmlNode *get_node_by_name(xmlChar  *, xmlNode*);
 static int      read_config(const         string);
 
-#include "rss_info.h"
+#include "class.h"
 rss_info::rss_info(string site_name, string url, string last_pubDate):
   site_name(site_name), url(url), last_pubDate(stoi(last_pubDate))
 {
@@ -63,7 +65,7 @@ thread::thread(const rss_info &rinfo):
 void thread::notify_send()
 {
   notification = notify_notification_new(info.site_name.c_str(), NULL, NULL);
-  notify_notification_update(notification, info.site_name.c_str(), ("<a href=\""+item.link+"\">"+item.title+"</a>").c_str(),  NULL);
+  notify_notification_update(notification, APP_NAME.c_str(), ("<b><a href=\""+item.link+"\">"+item.title+"</a></b>").c_str(),  NULL);
   notify_notification_show(notification, NULL);
 }
 
